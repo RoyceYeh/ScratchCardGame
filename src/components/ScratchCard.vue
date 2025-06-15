@@ -59,88 +59,109 @@ const handleResize = () => {
   calculateGameSize()
 
   if (app && (oldSize.width !== gameSize.value.width || oldSize.height !== gameSize.value.height)) {
-    // 儲存當前的 renderTexture 內容
-    let savedTextureData = null
-    if (renderTexture && !isFinished.value) {
-      // 創建臨時 canvas 來保存刮除內容
-      const tempCanvas = document.createElement('canvas')
-      tempCanvas.width = oldSize.width
-      tempCanvas.height = oldSize.height
-      const tempCtx = tempCanvas.getContext('2d')
-
-      // 提取 renderTexture 的像素數據
-      const pixels = app.renderer.extract.pixels(renderTexture)
-      const imageData = new ImageData(new Uint8ClampedArray(pixels), oldSize.width, oldSize.height)
-      tempCtx.putImageData(imageData, 0, 0)
-      savedTextureData = tempCanvas
-    }
+    // 儲存當前狀態
+    const coverAlpha = cover ? cover.alpha : 1
+    const currentScratchedArea = scratchedArea.value
+    const currentProgress = scratchProgress.value
 
     // 重新調整 PIXI 應用程式大小
     app.renderer.resize(gameSize.value.width, gameSize.value.height)
 
-    // 重新調整 sprites 大小
-    if (cover && texture) {
+    // 重新調整所有 sprites 大小
+    if (cover) {
       cover.width = gameSize.value.width
       cover.height = gameSize.value.height
+      cover.alpha = coverAlpha
+    }
+
+    if (texture) {
       texture.width = gameSize.value.width
       texture.height = gameSize.value.height
     }
 
-    // 重新創建 renderTexture 並恢復內容
+    // 處理 renderTexture
     if (renderTexture) {
-      renderTexture.destroy()
+      const oldRenderTexture = renderTexture
+
+      // 創建新的 renderTexture
       renderTexture = PIXI.RenderTexture.create(gameSize.value)
       renderTextureSprite.texture = renderTexture
 
-      // 如果遊戲已完成，直接移除 mask
+      // 根據遊戲狀態處理
       if (isFinished.value) {
+        // 遊戲已完成：直接移除 mask 顯示完整獎品
         texture.mask = null
-        cover.alpha = 0
-      } else {
+        if (cover) cover.alpha = 0
+      } else if (currentProgress > 0) {
+        // 遊戲進行中且有刮除進度：嘗試按比例恢復
         texture.mask = renderTextureSprite
 
-        // 恢復刮除內容
-        if (savedTextureData) {
-          const scaledSprite = new PIXI.Sprite(PIXI.Texture.from(savedTextureData))
-          scaledSprite.width = gameSize.value.width
-          scaledSprite.height = gameSize.value.height
+        try {
+          // 創建一個臨時的縮放 sprite 來恢復內容
+          const tempSprite = new PIXI.Sprite(oldRenderTexture)
+          tempSprite.width = gameSize.value.width
+          tempSprite.height = gameSize.value.height
 
+          // 將縮放後的內容渲染到新的 renderTexture
           app.renderer.render({
-            container: scaledSprite,
+            container: tempSprite,
             target: renderTexture,
             clear: true,
             skipUpdateTransform: false,
           })
+
+          // 按比例調整刮除面積
+          const sizeScale = (gameSize.value.width * gameSize.value.height) / (oldSize.width * oldSize.height)
+          scratchedArea.value = currentScratchedArea * sizeScale
+          scratchProgress.value = scratchedArea.value / (gameSize.value.width * gameSize.value.height)
+
+          // 檢查是否達到完成條件
+          if (scratchProgress.value >= 0.6) {
+            isFinished.value = true
+            texture.mask = null
+            if (cover) cover.alpha = 0
+          }
+        } catch (error) {
+          console.warn('無法恢復刮除內容，重置遊戲狀態:', error)
+          // 如果恢復失敗，清空刮除狀態但保持 mask
+          texture.mask = renderTextureSprite
+          scratchedArea.value = 0
+          scratchProgress.value = 0
         }
+      } else {
+        // 遊戲剛開始，沒有刮除內容
+        texture.mask = renderTextureSprite
       }
+
+      // 清理舊的 renderTexture
+      oldRenderTexture.destroy()
+    }
+
+    // 更新 hitArea 以匹配新的螢幕大小
+    if (app.stage) {
+      app.stage.hitArea = app.screen
     }
   }
 }
 
 const restartGame = async () => {
-  // 重置響應式變數
   scratchedArea.value = 0
   scratchProgress.value = 0
   isFinished.value = false
 
-  // 重新選擇獎品
   const randomIndex = Math.floor(Math.random() * prizeImages.length)
   currentPrize.value = prizeImages[randomIndex]
 
-  // 重置遊戲狀態
   if (app && cover && texture && renderTexture) {
-    // 清空 renderTexture
     app.renderer.render({
       container: new PIXI.Container(),
       target: renderTexture,
       clear: true,
     })
 
-    // 重置 cover 和 texture 狀態
     cover.alpha = 1
     texture.mask = renderTextureSprite
     await PIXI.Assets.load([currentPrize.value])
-    // 更新獎品圖片
     texture.texture = PIXI.Texture.from(currentPrize.value)
   }
 }
@@ -152,7 +173,6 @@ const initGame = async () => {
   const randomIndex = Math.floor(Math.random() * prizeImages.length)
   currentPrize.value = prizeImages[randomIndex]
 
-  // Create a new application
   app = new PIXI.Application()
 
   await app.init({
@@ -172,7 +192,6 @@ const initGame = async () => {
   const brush = new PIXI.Graphics().circle(0, 0, brushSize).fill({ color: 0xffffff })
   const line = new PIXI.Graphics()
 
-  // 用Assets集中載入資源
   await PIXI.Assets.load(['imgs/cover.png', currentPrize.value])
 
   const stageSize = gameSize.value
@@ -295,6 +314,21 @@ onUnmounted(() => {
 </template>
 
 <style scoped lang="scss">
+.progress-bar {
+  margin: 10px 0;
+}
+.progress-bar {
+  max-width: 200px;
+  height: 14px;
+}
+.progress-bar {
+  max-width: 250px;
+  height: 16px;
+
+  .progress-text {
+    font-size: 10px;
+  }
+}
 .scratch-card-container {
   display: flex;
   flex-direction: column;
